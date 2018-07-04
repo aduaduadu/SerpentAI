@@ -7,7 +7,12 @@ analytics:
     broadcast: false
     debug: false
     topic: ANALYTICS_TOPIC
-    persisted_events:
+    event_whitelist:
+        - NEW_EPISODE
+        - END_EPISODE
+        - EPISODE_STEP
+        - GAME_INPUT
+        - REWARD
         - TOTAL_REWARD
     host: 127.0.0.1
     port: 9999
