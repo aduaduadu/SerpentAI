@@ -6,6 +6,10 @@ from serpent.enums import InputControlTypes
 
 from serpent.utilities import SerpentError
 
+import os
+import json
+import time
+
 
 class Agent:
 
@@ -15,7 +19,6 @@ class Agent:
         if not isinstance(game_inputs, list):
             raise SerpentError("'game_inputs' should be list...")
 
-        # TODO: Support multiple actions
         self.game_inputs = game_inputs
         self.game_inputs_mappings = self._generate_game_inputs_mappings()
 
@@ -40,7 +43,7 @@ class Agent:
         self.current_reward = reward
         self.cumulative_reward += reward
 
-        self.analytics_client.track(event_key="REWARD", data={"reward": self.current_reward})
+        self.analytics_client.track(event_key="REWARD", data={"reward": self.current_reward, "total_reward": self.cumulative_reward})
 
         if terminal:
             self.analytics_client.track(event_key="TOTAL_REWARD", data={"reward": self.cumulative_reward})
@@ -53,6 +56,26 @@ class Agent:
 
         self.current_reward = 0
         self.cumulative_reward = 0
+
+    def emit_persisted_events(self):
+        file_path = f"{config['analytics']['topic']}.json"
+
+        if not os.path.isfile(file_path):
+            return None
+
+        with open(file_path, "r") as f:
+            for line in f:
+                event = json.loads(line.strip())
+
+                if event["event_key"] in config["analytics"]["persisted_events"]:
+                    self.analytics_client.track(
+                        event_key=event["event_key"],
+                        data=event["data"],
+                        timestamp=event["timestamp"],
+                        is_persistable=False
+                    )
+
+                    time.sleep(0.01)
 
     def _generate_game_inputs_mappings(self):
         mappings = list()
