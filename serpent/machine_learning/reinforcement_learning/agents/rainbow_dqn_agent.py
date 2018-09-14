@@ -7,6 +7,8 @@ from serpent.input_controller import KeyboardEvent, MouseEvent
 
 from serpent.enums import InputControlTypes
 
+from serpent.logger import Loggers
+
 from serpent.utilities import SerpentError
 
 import os
@@ -35,6 +37,7 @@ class RainbowDQNAgentModes(enum.Enum):
     TRAIN = 1
     EVALUATE = 2
 
+# Adapted for Serpent.AI from https://github.com/Kaixhin/Rainbow
 
 class RainbowDQNAgent(Agent):
 
@@ -43,11 +46,19 @@ class RainbowDQNAgent(Agent):
         name,
         game_inputs=None,
         callbacks=None,
-        evaluate_every=50,  # Every 50 episodes
-        evaluate_for=5,  # For 5 episodes
-        rainbow_kwargs=None
+        seed=420133769,
+        rainbow_kwargs=None,
+        logger=Loggers.NOOP,
+        logger_kwargs=None
     ):
-        super().__init__(name, game_inputs=game_inputs, callbacks=callbacks)
+        super().__init__(
+            name, 
+            game_inputs=game_inputs, 
+            callbacks=callbacks, 
+            seed=seed,
+            logger=logger,
+            logger_kwargs=logger_kwargs
+        )
 
         if len(game_inputs) > 1:
             raise SerpentError("RainbowDQNAgent only supports a single axis of game inputs.")
@@ -59,19 +70,23 @@ class RainbowDQNAgent(Agent):
             self.device = torch.device("cuda")
 
             torch.set_default_tensor_type("torch.cuda.FloatTensor")
-            torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.enabled = False
+
+            torch.cuda.manual_seed_all(seed)
         else:
             self.device = torch.device("cpu")
+            torch.set_num_threads(1)
+
+        torch.manual_seed(seed)
 
         agent_kwargs = dict(
+            algorithm="Rainbow DQN",
             replay_memory_capacity=100000,
             history=4,
             discount=0.99,
             multi_step=3,
             priority_weight=0.4,
             priority_exponent=0.5,
-            quantile=True,
-            quantiles=200,
             atoms=51,
             v_min=-10,
             v_max=10,
@@ -80,11 +95,13 @@ class RainbowDQNAgent(Agent):
             noisy_std=0.1,
             learning_rate=0.0000625,
             adam_epsilon=1.5e-4,
+            max_grad_norm=10,
             target_update=10000,
             save_steps=5000,
             observe_steps=50000,
             max_steps=5000000,
-            model=f"datasets/rainbow_dqn_{self.name}.pth"
+            model=f"datasets/rainbow_dqn_{self.name}.pth",
+            seed=seed
         )
 
         if isinstance(rainbow_kwargs, dict):
@@ -95,8 +112,6 @@ class RainbowDQNAgent(Agent):
         self.agent = RainbowAgent(
             len(self.game_inputs[0]["inputs"]),
             self.device,
-            quantile=agent_kwargs["quantile"],
-            quantiles=agent_kwargs["quantiles"],
             atoms=agent_kwargs["atoms"],
             v_min=agent_kwargs["v_min"],
             v_max=agent_kwargs["v_max"],
@@ -108,6 +123,7 @@ class RainbowDQNAgent(Agent):
             noisy_std=agent_kwargs["noisy_std"],
             learning_rate=agent_kwargs["learning_rate"],
             adam_epsilon=agent_kwargs["adam_epsilon"],
+            max_grad_norm=agent_kwargs["max_grad_norm"],
             model=agent_kwargs["model"]
         )
 
@@ -145,10 +161,7 @@ class RainbowDQNAgent(Agent):
             self.observe_mode = "MODEL"
             self.restore_model()
 
-        self.evaluate_every = evaluate_every
-        self.evaluate_for = evaluate_for
-
-        self.remaining_evaluation_episodes = 0
+        self.logger.log_hyperparams(agent_kwargs)
 
         if self._has_human_input_recording() and self.observe_mode == "RANDOM":
             self.add_human_observations_to_replay_memory()
@@ -168,8 +181,6 @@ class RainbowDQNAgent(Agent):
             self.current_action = self.agent.act(self.current_state)
         elif self.mode == RainbowDQNAgentModes.TRAIN:
             self.agent.reset_noise()
-            self.current_action = self.agent.act(self.current_state)
-        elif self.mode == RainbowDQNAgentModes.EVALUATE:
             self.current_action = self.agent.act(self.current_state)
 
         actions = list()
@@ -230,9 +241,6 @@ class RainbowDQNAgent(Agent):
                 if self.callbacks.get("after_update") is not None:
                     self.callbacks["after_update"]()
 
-        elif self.mode == RainbowDQNAgentModes.EVALUATE:
-            pass
-
         self.current_state = None
 
         self.current_reward = reward
@@ -245,16 +253,7 @@ class RainbowDQNAgent(Agent):
 
         if terminal and self.mode == RainbowDQNAgentModes.TRAIN:
             self.analytics_client.track(event_key="TOTAL_REWARD", data={"reward": self.cumulative_reward})
-
-            if self.current_episode % self.evaluate_every == 0:
-                self.set_mode(RainbowDQNAgentModes.EVALUATE)
-        elif terminal and self.mode == RainbowDQNAgentModes.EVALUATE:
-            self.analytics_client.track(event_key="TOTAL_REWARD_EVALUATE", data={"reward": self.cumulative_reward})
-
-            self.remaining_evaluation_episodes -= 1
-
-            if self.remaining_evaluation_episodes == 0:
-                self.set_mode(RainbowDQNAgentModes.TRAIN)
+            self.logger.log_metric("episode_rewards", self.cumulative_reward, step=self.current_step)
 
     def set_mode(self, rainbow_dqn_mode):
         self.mode = rainbow_dqn_mode
@@ -267,8 +266,6 @@ class RainbowDQNAgent(Agent):
             self.analytics_client.track(event_key="AGENT_MODE", data={"mode": "Training"})
         elif self.mode == RainbowDQNAgentModes.EVALUATE:
             self.agent.eval()
-            self.remaining_evaluation_episodes = self.evaluate_for
-
             self.analytics_client.track(event_key="AGENT_MODE", data={"mode": "Evaluating"})
 
     def add_human_observations_to_replay_memory(self):
@@ -325,6 +322,8 @@ class RainbowDQNAgent(Agent):
             f.write(json.dumps(data))
 
     def restore_model(self):
+        # PyTorch .pth file is already restored in RainbowAgent constructor
+
         file_path = self.model.replace(".pth", ".json")
 
         if os.path.isfile(file_path):

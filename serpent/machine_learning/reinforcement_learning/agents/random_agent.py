@@ -2,16 +2,41 @@ from serpent.machine_learning.reinforcement_learning.agent import Agent
 
 from serpent.enums import InputControlTypes
 
+from serpent.logger import Loggers
+
 import random
+import enum
+
+
+class RandomAgentModes(enum.Enum):
+    OBSERVE = 0
 
 
 class RandomAgent(Agent):
 
-    def __init__(self, name, game_inputs=None, callbacks=None, seed=None):
-        super().__init__(name, game_inputs=game_inputs, callbacks=callbacks)
+    def __init__(
+        self, 
+        name, 
+        game_inputs=None, 
+        callbacks=None, 
+        seed=None,
+        logger=Loggers.NOOP,
+        logger_kwargs=None
+    ):
+        super().__init__(
+            name, 
+            game_inputs=game_inputs, 
+            callbacks=callbacks, 
+            seed=seed,
+            logger=logger,
+            logger_kwargs=logger_kwargs
+        )
 
-        if seed is not None:
-            random.seed(seed)
+        self.mode = RandomAgentModes.OBSERVE
+
+        self.logger.log_hyperparams(
+            {"seed": seed}
+        )
 
     def generate_actions(self, state, **kwargs):
         actions = list()
